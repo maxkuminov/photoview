@@ -1,0 +1,68 @@
+name: Build scanned homelab image
+
+on:
+  push:
+    branches: [homelab-oidc-image]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: homelab-oidc-image
+  cancel-in-progress: false
+
+jobs:
+  build-scan-push:
+    if: github.ref == 'refs/heads/homelab-oidc-image'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Build image locally for scanning
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          provenance: false
+          sbom: false
+          tags: |
+            ghcr.io/maxkuminov/photoview:homelab-oidc
+            ghcr.io/maxkuminov/photoview:homelab-oidc-${{ github.sha }}
+          build-args: |
+            COMMIT_SHA=${{ github.sha }}
+            VERSION=homelab-oidc
+          labels: |
+            org.opencontainers.image.source=https://github.com/maxkuminov/photoview
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=homelab-oidc
+          cache-to: type=gha,mode=max,scope=homelab-oidc
+      - name: Scan fixable high and critical vulnerabilities before publishing
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ghcr.io/maxkuminov/photoview:homelab-oidc
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          format: table
+      - name: Sign in to GHCR after the scan
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish scanned image and record digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          image=ghcr.io/maxkuminov/photoview
+          output=$(docker push "$image:homelab-oidc-${GITHUB_SHA}")
+          printf '%s\n' "$output"
+          digest=$(printf '%s\n' "$output" | sed -nE 's/^.*digest: (sha256:[0-9a-f]{64}).*$/\1/p')
+          test -n "$digest"
+          docker push "$image:homelab-oidc"
+          printf 'PhotoView image: `%s:homelab-oidc-%s@%s`\n' "$image" "$GITHUB_SHA" "$digest" >> "$GITHUB_STEP_SUMMARY"
